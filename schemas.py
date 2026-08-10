@@ -1,4 +1,4 @@
-"""Tool schemas for the Unraid plugin. Descriptions are what the LLM reads —
+"""Tool schemas for the Unraid plugin. Descriptions are what the LLM reads -
 they say when to use each tool and what it returns."""
 
 OVERVIEW = {

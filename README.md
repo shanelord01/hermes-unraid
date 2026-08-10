@@ -1,8 +1,8 @@
 # hermes-unraid
 
-A [Hermes Agent](https://hermes-agent.nousresearch.com/) plugin that gives your agent **read-only** visibility into an Unraid server — array health, disk status and temperatures, docker container states, and system notifications — via Unraid's official built-in GraphQL API (Unraid 7+).
+A [Hermes Agent](https://hermes-agent.nousresearch.com/) plugin that gives your agent **read-only** visibility into an Unraid server - array health, disk status and temperatures, docker container states, and system notifications - via Unraid's official built-in GraphQL API (Unraid 7+).
 
-Built for the common homelab case where Hermes itself runs in a Docker container *on* the Unraid host: the agent's shell only sees its own container, and you very deliberately do not want to hand it SSH or the Docker socket. This plugin closes the visibility gap while keeping actuation impossible — the API key it uses cannot change anything, enforced server-side by Unraid.
+Built for the common homelab case where Hermes itself runs in a Docker container *on* the Unraid host: the agent's shell only sees its own container, and you very deliberately do not want to hand it SSH or the Docker socket. This plugin closes the visibility gap while keeping actuation impossible - the API key it uses cannot change anything, enforced server-side by Unraid.
 
 ## Tools
 
@@ -60,7 +60,7 @@ hermes -z "Give me the current status of my unraid server"
 
 - Unraid 7.x with the built-in `unraid-api` (ships with the OS; this plugin was built against API v4.36)
 - Hermes Agent with plugin support
-- Python stdlib only — no extra dependencies
+- Python stdlib only - no extra dependencies
 
 ## License
 

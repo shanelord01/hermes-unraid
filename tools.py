@@ -32,7 +32,7 @@ def _ssl_context() -> ssl.SSLContext:
 
 def _gql(query: str, variables: dict | None = None) -> dict:
     """POST a GraphQL query. Returns the decoded response dict.
-    Raises urllib/json errors — callers wrap in try/except."""
+    Raises urllib/json errors - callers wrap in try/except."""
     body = json.dumps({"query": query, "variables": variables or {}}).encode()
     req = urllib.request.Request(
         _endpoint(),
@@ -57,7 +57,7 @@ def _run(query: str, variables: dict | None = None) -> str:
         result = _gql(query, variables)
     except urllib.error.HTTPError as e:
         return json.dumps({"error": f"HTTP {e.code} from Unraid API: {e.reason}"})
-    except Exception as e:  # noqa: BLE001 — handlers must never raise
+    except Exception as e:  # noqa: BLE001 - handlers must never raise
         return json.dumps({"error": f"{type(e).__name__}: {e}"})
     if "errors" in result:
         return json.dumps({"error": "GraphQL error", "details": result["errors"]})
@@ -162,7 +162,7 @@ _MUTATION_RE = re.compile(r"^\s*mutation\b", re.IGNORECASE)
 def unraid_graphql(args: dict, **kwargs) -> str:
     query = args.get("query") or ""
     if _MUTATION_RE.search(query) or re.search(r"\bmutation\s*[{(]", query, re.IGNORECASE):
-        return json.dumps({"error": "Mutations are not permitted — this plugin is read-only by design."})
+        return json.dumps({"error": "Mutations are not permitted - this plugin is read-only by design."})
     if not query.strip():
         return json.dumps({"error": "query is required"})
     return _run(query)
