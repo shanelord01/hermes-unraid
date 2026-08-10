@@ -1,5 +1,5 @@
 name: unraid
-version: 1.0.0
+version: 1.1.0
 description: >-
   Read-only Unraid server status tools - array health, disks/temps, docker
   container states, and system notifications via the official Unraid GraphQL
@@ -11,6 +11,10 @@ provides_tools:
   - unraid_disks
   - unraid_containers
   - unraid_notifications
+  - unraid_parity
+  - unraid_shares
+  - unraid_metrics
+  - unraid_vms
   - unraid_graphql
 requires_env:
   - name: UNRAID_API_URL

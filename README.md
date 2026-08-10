@@ -12,7 +12,11 @@ Built for the common homelab case where Hermes itself runs in a Docker container
 | `unraid_disks` | Every array/parity/cache disk with status, temperature, and usage |
 | `unraid_containers` | Docker containers with state, filterable by state or name |
 | `unraid_notifications` | Unraid's own notifications (subject, importance, timestamp) |
-| `unraid_graphql` | Raw read-only GraphQL escape hatch for anything else (shares, network, VMs); mutations refused |
+| `unraid_parity` | Parity check history and whether a check is running right now |
+| `unraid_shares` | User shares with used/free space |
+| `unraid_metrics` | Live CPU and memory utilisation |
+| `unraid_vms` | Virtual machines and their states |
+| `unraid_graphql` | Raw read-only GraphQL escape hatch for anything else (network, services, etc.); mutations refused |
 
 Also registers a `/unraid` slash command for a quick status from any connected chat platform.
 

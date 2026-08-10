@@ -29,6 +29,30 @@ def register(ctx):
         handler=tools.unraid_notifications,
     )
     ctx.register_tool(
+        name="unraid_parity",
+        toolset="unraid",
+        schema=schemas.PARITY,
+        handler=tools.unraid_parity,
+    )
+    ctx.register_tool(
+        name="unraid_shares",
+        toolset="unraid",
+        schema=schemas.SHARES,
+        handler=tools.unraid_shares,
+    )
+    ctx.register_tool(
+        name="unraid_metrics",
+        toolset="unraid",
+        schema=schemas.METRICS,
+        handler=tools.unraid_metrics,
+    )
+    ctx.register_tool(
+        name="unraid_vms",
+        toolset="unraid",
+        schema=schemas.VMS,
+        handler=tools.unraid_vms,
+    )
+    ctx.register_tool(
         name="unraid_graphql",
         toolset="unraid",
         schema=schemas.GRAPHQL,

@@ -69,6 +69,44 @@ NOTIFICATIONS = {
     },
 }
 
+PARITY = {
+    "name": "unraid_parity",
+    "description": (
+        "Parity check health: history of past checks (date, duration, speed, "
+        "status, error count) and whether a check is running right now with "
+        "its progress. Use for 'when was the last parity check' or 'is a "
+        "parity check running' questions - the key Unraid data-integrity signal."
+    ),
+    "parameters": {"type": "object", "properties": {}},
+}
+
+SHARES = {
+    "name": "unraid_shares",
+    "description": (
+        "List Unraid user shares with used/free space in kilobytes and their "
+        "comment/description. Use for 'how full is share X' questions."
+    ),
+    "parameters": {"type": "object", "properties": {}},
+}
+
+METRICS = {
+    "name": "unraid_metrics",
+    "description": (
+        "Live host utilisation: total CPU percent and memory percent right "
+        "now. Use for 'how loaded is the server' questions."
+    ),
+    "parameters": {"type": "object", "properties": {}},
+}
+
+VMS = {
+    "name": "unraid_vms",
+    "description": (
+        "List virtual machines on the Unraid host with their state "
+        "(RUNNING/SHUTOFF/PAUSED)."
+    ),
+    "parameters": {"type": "object", "properties": {}},
+}
+
 GRAPHQL = {
     "name": "unraid_graphql",
     "description": (

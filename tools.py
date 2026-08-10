@@ -70,6 +70,7 @@ def unraid_overview(args: dict, **kwargs) -> str:
         { array { state capacity { kilobytes { used total } } }
           docker { containers { names state } }
           info { os { uptime distro release } }
+          metrics { cpu { percentTotal } memory { percentTotal } }
           notifications { overview { unread { alert warning info total } } } }
         """
     )
@@ -90,6 +91,10 @@ def unraid_overview(args: dict, **kwargs) -> str:
                     "used_percent": round(100 * used_kb / total_kb, 1) if total_kb else None,
                 },
                 "os": data.get("info", {}).get("os", {}),
+                "utilisation": {
+                    "cpu_percent": round((data.get("metrics", {}).get("cpu", {}) or {}).get("percentTotal") or 0, 1),
+                    "memory_percent": round((data.get("metrics", {}).get("memory", {}) or {}).get("percentTotal") or 0, 1),
+                },
                 "containers": {
                     "total": len(containers),
                     "running": len(running),
@@ -154,6 +159,46 @@ def unraid_notifications(args: dict, **kwargs) -> str:
         """,
         {"filter": {"type": ntype, "offset": 0, "limit": limit}},
     )
+
+
+def unraid_parity(args: dict, **kwargs) -> str:
+    # vars.mdResyncSize is deliberately not queried: the upstream API returns
+    # it as a 32-bit Int and large arrays overflow it (server-side bug).
+    raw = _run(
+        """
+        { parityHistory { date duration speed status errors }
+          vars { mdResyncPos sbSynced sbSyncErrs } }
+        """
+    )
+    try:
+        data = json.loads(raw)
+        if "error" in data:
+            return raw
+        v = data.get("vars", {}) or {}
+        resync_pos = int(v.get("mdResyncPos") or 0)
+        return json.dumps(
+            {
+                "check_running_now": resync_pos > 0,
+                "resync_position": resync_pos,
+                "last_sync_epoch": v.get("sbSynced"),
+                "last_sync_errors": v.get("sbSyncErrs"),
+                "history": data.get("parityHistory", []),
+            }
+        )
+    except Exception as e:  # noqa: BLE001
+        return json.dumps({"error": f"{type(e).__name__}: {e}", "raw": raw[:2000]})
+
+
+def unraid_shares(args: dict, **kwargs) -> str:
+    return _run("{ shares { name used free comment } }")
+
+
+def unraid_metrics(args: dict, **kwargs) -> str:
+    return _run("{ metrics { cpu { percentTotal } memory { percentTotal } } }")
+
+
+def unraid_vms(args: dict, **kwargs) -> str:
+    return _run("{ vms { domains { name state } } }")
 
 
 _MUTATION_RE = re.compile(r"^\s*mutation\b", re.IGNORECASE)
