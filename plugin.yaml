@@ -1,0 +1,22 @@
+name: unraid
+version: 1.0.0
+description: >-
+  Read-only Unraid server status tools — array health, disks/temps, docker
+  container states, and system notifications via the official Unraid GraphQL
+  API. Designed for agents running in a container on the Unraid host they
+  monitor: visibility without actuation.
+author: Shane Lord
+provides_tools:
+  - unraid_overview
+  - unraid_disks
+  - unraid_containers
+  - unraid_notifications
+  - unraid_graphql
+requires_env:
+  - name: UNRAID_API_URL
+    description: "Unraid GraphQL endpoint, e.g. https://192.168.1.10:5001/graphql (webGUI port)"
+    secret: false
+  - name: UNRAID_API_KEY
+    description: "Unraid API key — create a READ-ONLY key: unraid-api apikey --create --name hermes --roles VIEWER --permissions \"ARRAY:READ_ANY,DOCKER:READ_ANY,DISK:READ_ANY,INFO:READ_ANY,NOTIFICATIONS:READ_ANY\""
+    url: "https://docs.unraid.net/API/how-to-use-the-api/"
+    secret: true
