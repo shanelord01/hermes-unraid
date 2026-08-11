@@ -1,9 +1,12 @@
 name: unraid
-version: 3.0.0
+version: 3.1.0
 description: >-
   Unraid server tools - array health, disks/temps, docker container states,
   parity, shares, VMs, system notifications, and host/container logs for
-  troubleshooting, via the official Unraid GraphQL API. Every tool declares a
+  troubleshooting, via the official Unraid GraphQL API. Also a platform
+  adapter: subscribes to notificationsWarningsAndAlerts and forwards new
+  warnings and alerts to the agent (importance filtered, per-subject cooldown,
+  hourly ceiling), and delivers agent messages back as Unraid notifications. Every tool declares a
   RESOURCE:ACTION permission in Unraid's own grammar, and UNRAID_SCOPES
   controls what is permitted. The whole API is reachable through a generic
   permission-checked passthrough, with the permission map derived by schema
@@ -51,6 +54,22 @@ optional_env:
   - name: UNRAID_PROTECTED_CONTAINERS
     description: "Comma-separated container names that write tools must never touch. The agent's own container is detected automatically, but a sidecar sharing its network namespace cannot be and must be listed here."
     prompt: "Protected container names"
+    secret: false
+  - name: UNRAID_ALERTS_ENABLED
+    description: "Forward Unraid warnings/alerts to the agent (default true). Inbound needs NOTIFICATIONS:READ_ANY, which the VIEWER role grants."
+    prompt: "Enable alert forwarding? (true/false)"
+    secret: false
+  - name: UNRAID_ALERT_MIN_IMPORTANCE
+    description: "Minimum importance to forward: INFO, WARNING, or ALERT (default WARNING)"
+    prompt: "Minimum importance"
+    secret: false
+  - name: UNRAID_ALERT_COOLDOWN_SECONDS
+    description: "Per-subject cooldown between forwarded alerts (default 300). Keyed on subject rather than id, because a flapping condition raises a fresh id each time and an id-based cooldown would never catch it."
+    prompt: "Cooldown seconds"
+    secret: false
+  - name: UNRAID_ALERT_MAX_PER_HOUR
+    description: "Hard ceiling on forwarded alerts per hour (default 20). Every forwarded alert can wake the agent and cost model tokens."
+    prompt: "Max alerts per hour"
     secret: false
   - name: UNRAID_API_VERIFY_TLS
     description: "Set to 1 to verify the Unraid TLS certificate. Off by default because the cert is issued for the myunraid.net hostname and a raw LAN IP endpoint cannot validate."
