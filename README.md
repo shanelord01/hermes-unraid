@@ -79,11 +79,9 @@ Use `unraid_api_capabilities` first. Field names are not guessable - the rclone 
 
 ## Alerts: Unraid pushes to the agent
 
-The tools let the agent ask. The platform half lets Unraid tell it, by subscribing to `notificationsWarningsAndAlerts` over `graphql-transport-ws`. New warnings and alerts - disk errors, parity problems, Fix Common Problems findings - reach the agent when they happen rather than whenever something next polls.
+The plugin subscribes to `notificationsWarningsAndAlerts` over `graphql-transport-ws`. New warnings and alerts - disk errors, parity problems, Fix Common Problems findings - reach the agent when they happen rather than whenever something next polls.
 
-Outbound works too: agent messages are delivered as Unraid notifications via `createNotification`, so they appear in the webGUI notification centre and flow through whatever notification agents Unraid has configured. That also makes `deliver=unraid` usable as a cron delivery target.
-
-This is one plugin, not two. Home Assistant looks singular only because its tools live in Hermes core (`tools/homeassistant_tool.py`) with just the platform shipped as a plugin. A user plugin cannot add to core, but it can register tools and a platform from the same `register()`, because the loader only gates `kind` for bundled plugins.
+Agent messages are delivered as Unraid notifications via `createNotification`, so they appear in the webGUI notification centre and flow through whatever notification agents Unraid has configured. That also makes `deliver=unraid` usable as a cron delivery target.
 
 ### Rate limiting is on by default
 
@@ -98,7 +96,7 @@ UNRAID_ALERT_MAX_PER_HOUR=20        # hard ceiling
 
 The cooldown keys on **subject**, not notification id, because a flapping condition raises a fresh id every time and an id-based cooldown would never catch it.
 
-### Two behaviours worth knowing
+### Deduplication and backlog handling
 
 `notificationsWarningsAndAlerts` returns a **list** and re-sends the whole current set whenever anything changes. Without dedupe by id, one new alert would re-announce every outstanding one. The adapter dedupes, and treats the first payload after connecting as the existing backlog - seeding the dedupe set rather than emitting it. Otherwise every gateway restart would replay all open alerts.
 
@@ -180,13 +178,7 @@ Note also that `refreshDockerDigests` contacts every registry serially and routi
 
 `unraid_container_logs` depends on the API's `docker.logs` query, which is unreliable for some containers. Observed on Unraid API v4.37:
 
-| Container | API `tail=5` | API no `tail` | Actual `docker logs` |
-|---|---|---|---|
-| grafana | 5 | 200 | 7,304 |
-| hermes | 0 | 7 | 264 |
-| traccar | 0 | 0 | 119,450 |
-
-Asking for more lines can return fewer, and some containers return nothing at all. The plugin retries without `tail` when it gets zero lines, and when it still gets nothing it says so explicitly, because a false "no logs" reads as "the container is quiet" and is actively misleading during troubleshooting.
+Some containers return the requested lines correctly. Others return fewer lines for a larger `tail`, and some return nothing at all despite having tens of thousands of log lines. The plugin retries without `tail` when it gets zero lines, and when it still gets nothing it says so explicitly, because a false "no logs" reads as "the container is quiet" and is actively misleading during troubleshooting.
 
 Server log files (`unraid_logs`) do not have this problem.
 

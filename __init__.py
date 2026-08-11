@@ -1,10 +1,8 @@
 """Hermes Agent plugin: Unraid server management via the official GraphQL API.
 
-One plugin, two halves. Tools let the agent ask; the platform adapter lets
-Unraid tell, by subscribing to warnings and alerts and delivering messages back
-as Unraid notifications. Home Assistant looks like a single plugin only because
-its tools live in Hermes core; a user plugin cannot do that, but it can
-register both here - the loader only gates `kind` for bundled plugins.
+Registers two halves: tools for querying and controlling the server, and a
+platform adapter that forwards Unraid warnings and alerts to the agent and
+delivers messages back as Unraid notifications.
 
 Every tool declares a RESOURCE:ACTION permission in Unraid's own grammar.
 UNRAID_SCOPES decides which get registered and defaults to *:READ_ANY, so the
@@ -110,9 +108,9 @@ def register(ctx):
         description="Quick Unraid server status (array, containers, notifications)",
     )
 
-    # Platform half. Imported lazily: it depends on gateway.* and aiohttp,
-    # which are present at runtime but absent when the module is imported
-    # standalone for testing. A failure here must not cost you the tools.
+    # Imported lazily: the adapter depends on gateway.* and aiohttp, which are
+    # absent when this module is imported standalone. A failure here must not
+    # cost the tools.
     try:
         from . import platform_adapter
         platform_adapter.register_platform(ctx)

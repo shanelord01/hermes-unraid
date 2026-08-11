@@ -1,9 +1,5 @@
 """Unraid platform adapter: alerts in, notifications out.
 
-Part of the single `unraid` plugin - register() in __init__.py wires both
-halves. A user plugin may register tools and a platform together because
-the loader only gates `kind` for bundled plugins.
-
 Inbound: subscribes to the Unraid API's ``notificationsWarningsAndAlerts``
 GraphQL subscription over graphql-transport-ws and forwards new warnings and
 alerts to the agent.
@@ -167,11 +163,10 @@ class UnraidAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 4000
 
     def __init__(self, config: PlatformConfig):
-        # Platform is a closed enum, but _missing_ mints a pseudo-member for a
-        # platform the registry knows about. That only holds once
-        # register_platform() has run, which is why the lookup lives here in
-        # the factory path rather than at import time. Same pattern as the
-        # bundled irc and ntfy adapters.
+        # Platform is a closed enum; _missing_ mints a pseudo-member only for a
+        # platform the registry already knows about. That holds once
+        # register_platform() has run, so the lookup must happen here in the
+        # factory path rather than at import time.
         super().__init__(config=config, platform=Platform("unraid"))
         self._session: Optional[Any] = None
         self._ws: Optional[Any] = None
