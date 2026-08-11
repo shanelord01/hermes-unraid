@@ -77,6 +77,33 @@ Unrecognised fields are refused rather than allowed, so a newly added or misspel
 
 Use `unraid_api_capabilities` first. Field names are not guessable - the rclone mutation is `createRCloneRemote`, not `createRemote`.
 
+## Alerts: Unraid pushes to the agent
+
+The tools let the agent ask. The platform half lets Unraid tell it, by subscribing to `notificationsWarningsAndAlerts` over `graphql-transport-ws`. New warnings and alerts - disk errors, parity problems, Fix Common Problems findings - reach the agent when they happen rather than whenever something next polls.
+
+Outbound works too: agent messages are delivered as Unraid notifications via `createNotification`, so they appear in the webGUI notification centre and flow through whatever notification agents Unraid has configured. That also makes `deliver=unraid` usable as a cron delivery target.
+
+This is one plugin, not two. Home Assistant looks singular only because its tools live in Hermes core (`tools/homeassistant_tool.py`) with just the platform shipped as a plugin. A user plugin cannot add to core, but it can register tools and a platform from the same `register()`, because the loader only gates `kind` for bundled plugins.
+
+### Rate limiting is on by default
+
+Every forwarded alert can wake the agent and cost model tokens, so the limits are defaults rather than opt-in:
+
+```env
+UNRAID_ALERTS_ENABLED=true          # master switch
+UNRAID_ALERT_MIN_IMPORTANCE=WARNING # INFO | WARNING | ALERT
+UNRAID_ALERT_COOLDOWN_SECONDS=300   # per subject
+UNRAID_ALERT_MAX_PER_HOUR=20        # hard ceiling
+```
+
+The cooldown keys on **subject**, not notification id, because a flapping condition raises a fresh id every time and an id-based cooldown would never catch it.
+
+### Two behaviours worth knowing
+
+`notificationsWarningsAndAlerts` returns a **list** and re-sends the whole current set whenever anything changes. Without dedupe by id, one new alert would re-announce every outstanding one. The adapter dedupes, and treats the first payload after connecting as the existing backlog - seeding the dedupe set rather than emitting it. Otherwise every gateway restart would replay all open alerts.
+
+Inbound needs `NOTIFICATIONS:READ_ANY`, which the `VIEWER` role already grants. Outbound additionally needs `NOTIFICATIONS:CREATE_ANY`; without it, sending returns a message naming the missing permission rather than a bare `FORBIDDEN`.
+
 ## Protected containers
 
 When the agent runs on the host it manages, updating its own container kills the agent mid-call and reports a failure even when the update succeeded. Worse, a sidecar sharing the agent's network namespace (`network_mode: service:<agent>`) is silently orphaned by the recreate: it keeps reporting healthy while having no working network.
