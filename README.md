@@ -92,6 +92,7 @@ UNRAID_ALERTS_ENABLED=true          # master switch
 UNRAID_ALERT_MIN_IMPORTANCE=WARNING # INFO | WARNING | ALERT
 UNRAID_ALERT_COOLDOWN_SECONDS=300   # per subject
 UNRAID_ALERT_MAX_PER_HOUR=20        # hard ceiling
+UNRAID_OUTBOUND_ENABLED=true        # deliver agent messages to Unraid
 ```
 
 The cooldown keys on **subject**, not notification id, because a flapping condition raises a fresh id every time and an id-based cooldown would never catch it.
@@ -115,6 +116,8 @@ UNRAID_PROTECTED_CONTAINERS=hermes,hermes-ts
 Write tools refuse protected containers and say so, rather than skipping them silently. `updateAllContainers` is deliberately not exposed at all: it takes no arguments and therefore cannot honour this list.
 
 ## Setup
+
+Four steps: create a scoped API key, point the plugin at your server, install it, and check what registered.
 
 ### 1. Create an API key (on the Unraid host)
 
@@ -144,6 +147,8 @@ UNRAID_SCOPES=DOCKER:READ_ANY,LOGS:READ_ANY
 UNRAID_PROTECTED_CONTAINERS=hermes
 ```
 
+Only `UNRAID_API_URL` and `UNRAID_API_KEY` are required. Everything else can be set here or from the dashboard tab once the plugin is running - see [Configuration](#configuration) for how the two interact.
+
 The endpoint is your webGUI address plus `/graphql` (check Settings, Management Access for the port). TLS note: Unraid's certificate is issued for its `myunraid.net` hostname, so verification against a raw LAN IP fails and the plugin skips TLS verification by default. Set `UNRAID_API_VERIFY_TLS=1` to enforce it if your `UNRAID_API_URL` uses the proper hostname.
 
 ### 3. Install the plugin
@@ -162,8 +167,43 @@ hermes -z "Which unraid tools do you have available, and what is my server statu
 
 The gateway log reports the scopes in effect, the key's name and roles, how many tools registered, and a warning for anything in scope the key appears unable to do.
 
-## Known limitation: update detection only covers template-managed containers
+## Configuration
 
+Settings resolve in this order:
+
+1. **The settings file**, `$HERMES_HOME/unraid_settings.json` - written by the dashboard tab
+2. **Environment variables**
+3. **Built-in defaults**
+
+A field is only taken from the file when it is present and non-empty, so clearing it in the dashboard hands control back to the environment rather than storing a blank. Once the dashboard has saved a field, editing the corresponding environment variable has no effect until the field is cleared.
+
+| Setting | Environment variable | Default |
+|---|---|---|
+| API scopes | `UNRAID_SCOPES` | `*:READ_ANY` |
+| Protected containers | `UNRAID_PROTECTED_CONTAINERS` | none |
+| Forward alerts | `UNRAID_ALERTS_ENABLED` | `true` |
+| Minimum importance | `UNRAID_ALERT_MIN_IMPORTANCE` | `WARNING` |
+| Alert cooldown (seconds) | `UNRAID_ALERT_COOLDOWN_SECONDS` | `300` |
+| Alerts per hour | `UNRAID_ALERT_MAX_PER_HOUR` | `20` |
+| Outbound notifications | `UNRAID_OUTBOUND_ENABLED` | `true` |
+| Verify TLS | `UNRAID_API_VERIFY_TLS` | off |
+
+### Dashboard tab
+
+The plugin adds an **Unraid** tab to the Hermes dashboard with toggles for alert forwarding, importance threshold, cooldown, hourly cap, outbound notifications, API scopes and protected containers. Each field is labelled with where its value came from, so it is clear whether the dashboard, an environment variable or a default is in control.
+
+Alert settings are read per event, so changes take effect without a restart. Scope changes alter which tools are registered and need a gateway restart.
+
+## Limitations
+
+Three things the Unraid API cannot do, all upstream rather than plugin behaviour. Each is reported explicitly rather than being reported as a clean result.
+
+### Plugin updates cannot be detected
+`unraid_install_plugin` installs or updates a plugin from its `.plg` URL, and Unraid treats an update as a reinstall from the same URL. What the API cannot do is tell you which plugins need one: `installedUnraidPlugins` returns `[String!]!`, a list of names with no version or update flag. Update detection lives in Community Applications' web UI and is not exposed.
+
+So the agent can apply a plugin update you name, but cannot discover that one is available.
+
+### Update detection only covers template-managed containers
 `unraid_check_updates` depends on Unraid's own digest comparison, which works off a container's docker template. Containers created by Compose Manager have no template, so `isUpdateAvailable` reports null for them permanently. That is "not checkable here", not "unknown but retryable".
 
 The tool separates the two rather than lumping them together:
@@ -174,8 +214,7 @@ The tool separates the two rather than lumping them together:
 
 Note also that `refreshDockerDigests` contacts every registry serially and routinely takes over a minute. The plugin allows 240s for it; a shorter client timeout aborts while the server keeps polling, leaving digests half-populated.
 
-## Known upstream limitation: container logs
-
+### Container logs
 `unraid_container_logs` depends on the API's `docker.logs` query, which is unreliable for some containers. Observed on Unraid API v4.37:
 
 Some containers return the requested lines correctly. Others return fewer lines for a larger `tail`, and some return nothing at all despite having tens of thousands of log lines. The plugin retries without `tail` when it gets zero lines, and when it still gets nothing it says so explicitly, because a false "no logs" reads as "the container is quiet" and is actively misleading during troubleshooting.

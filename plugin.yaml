@@ -1,5 +1,5 @@
 name: unraid
-version: 3.1.0
+version: 3.2.0
 description: >-
   Unraid server tools - array health, disks/temps, docker container states,
   parity, shares, VMs, system notifications, and host/container logs for
@@ -70,6 +70,10 @@ optional_env:
   - name: UNRAID_ALERT_MAX_PER_HOUR
     description: "Hard ceiling on forwarded alerts per hour (default 20). Every forwarded alert can wake the agent and cost model tokens."
     prompt: "Max alerts per hour"
+    secret: false
+  - name: UNRAID_OUTBOUND_ENABLED
+    description: "Deliver agent messages into Unraid's notification centre (default true). Requires NOTIFICATIONS:CREATE_ANY on the API key."
+    prompt: "Enable outbound notifications? (true/false)"
     secret: false
   - name: UNRAID_API_VERIFY_TLS
     description: "Set to 1 to verify the Unraid TLS certificate. Off by default because the cert is issued for the myunraid.net hostname and a raw LAN IP endpoint cannot validate."
