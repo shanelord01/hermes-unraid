@@ -294,6 +294,9 @@ INSTALL_PLUGIN = {
     "description": (
         "Install or update an Unraid plugin from its .plg URL. Unraid updates "
         "a plugin by reinstalling from the same URL, so this covers both. "
+        "NOTE: the API cannot tell you which plugins have updates available - "
+        "installedUnraidPlugins returns names only, with no version or "
+        "update flag. Do not go looking for one. "
         "Installing a plugin executes code on the host as root - only use URLs "
         "the operator has specified or that are already installed."
     ),

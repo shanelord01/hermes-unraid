@@ -77,53 +77,12 @@ def _env(name: str, default: str = "") -> str:
 
 
 def _settings() -> Dict[str, Any]:
-    """Effective settings.
-
-    A JSON settings file wins over the environment when present, so the
-    dashboard UI and env vars do not fight; env remains the fallback for
-    headless installs.
-    """
-    data: Dict[str, Any] = {}
-    home = _env("HERMES_HOME") or os.path.expanduser("~/.hermes")
-    path = os.path.join(home, "unraid_platform_settings.json")
+    """Effective alert settings, shared with the tools half and the dashboard."""
     try:
-        if os.path.exists(path):
-            with open(path) as fh:
-                data = json.load(fh) or {}
-    except Exception as e:  # noqa: BLE001 - a bad settings file must not stop alerts
-        logger.warning("[Unraid] ignoring unreadable settings file %s: %s", path, e)
-
-    def pick(key: str, env_name: str, default):
-        if key in data:
-            return data[key]
-        raw = _env(env_name)
-        return raw if raw else default
-
-    min_importance = str(pick("min_importance", "UNRAID_ALERT_MIN_IMPORTANCE",
-                              _DEFAULT_MIN_IMPORTANCE)).upper()
-    if min_importance not in _IMPORTANCE_RANK:
-        min_importance = _DEFAULT_MIN_IMPORTANCE
-    try:
-        cooldown = int(pick("cooldown_seconds", "UNRAID_ALERT_COOLDOWN_SECONDS",
-                            _DEFAULT_COOLDOWN_SECONDS))
-    except (TypeError, ValueError):
-        cooldown = _DEFAULT_COOLDOWN_SECONDS
-    try:
-        max_per_hour = int(pick("max_per_hour", "UNRAID_ALERT_MAX_PER_HOUR",
-                                _DEFAULT_MAX_PER_HOUR))
-    except (TypeError, ValueError):
-        max_per_hour = _DEFAULT_MAX_PER_HOUR
-    enabled = pick("alerts_enabled", "UNRAID_ALERTS_ENABLED", True)
-    if isinstance(enabled, str):
-        enabled = enabled.lower() not in ("0", "false", "no", "off")
-
-    return {
-        "alerts_enabled": bool(enabled),
-        "min_importance": min_importance,
-        "cooldown_seconds": max(0, cooldown),
-        "max_per_hour": max(0, max_per_hour),
-        "settings_path": path,
-    }
+        from . import settings as _s
+    except ImportError:  # standalone import for testing
+        import settings as _s
+    return _s.load()
 
 
 def _ssl_context() -> ssl.SSLContext:

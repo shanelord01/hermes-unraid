@@ -1,0 +1,13 @@
+{
+  "name": "unraid",
+  "label": "Unraid",
+  "description": "Unraid server settings: alert forwarding, notification delivery, and API scopes.",
+  "icon": "Server",
+  "version": "3.2.0",
+  "tab": {
+    "path": "/unraid",
+    "position": "after:skills"
+  },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

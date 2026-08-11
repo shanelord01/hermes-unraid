@@ -18,9 +18,10 @@ import urllib.error
 import urllib.request
 
 try:  # package import when loaded as a Hermes plugin
-    from . import api_map
+    from . import api_map, settings as _settings_mod
 except ImportError:  # direct import when testing the module standalone
     import api_map
+    import settings as _settings_mod
 
 _TIMEOUT_SECONDS = 15
 
@@ -29,6 +30,10 @@ _TIMEOUT_SECONDS = 15
 # The default timeout would abort it client-side while the server carried on,
 # leaving digests half-populated and update status mostly "undetermined".
 _REFRESH_TIMEOUT_SECONDS = 240
+
+# Container updates pull images and recreate containers; lifecycle actions can
+# block on a slow stop. Both outlive the default timeout on a busy host.
+_MUTATION_TIMEOUT_SECONDS = 240
 
 # ---------------------------------------------------------------------------
 # Scopes - RESOURCE:ACTION, mirroring Unraid's own permission grammar
@@ -92,7 +97,7 @@ def parse_scopes() -> set:
     entries are ignored rather than raising - a typo should cost you a tool,
     not the whole plugin.
     """
-    raw = os.environ.get("UNRAID_SCOPES", "").strip() or _DEFAULT_SCOPES
+    raw = str(_settings_mod.load().get("scopes") or "").strip() or _DEFAULT_SCOPES
     out = set()
     for item in raw.split(","):
         item = item.strip().upper()
@@ -285,6 +290,23 @@ def _run(query: str, variables: dict | None = None, timeout: int | None = None) 
     try:
         result = _gql(query, variables, timeout=timeout)
     except urllib.error.HTTPError as e:
+        # A GraphQL validation failure arrives as HTTP 400 with the reason in
+        # the body ("Field X must not have a selection since type ... has no
+        # subfields"). Discarding it leaves the caller guessing at the schema,
+        # so surface it.
+        detail = ""
+        try:
+            body = json.loads(e.read().decode() or "{}")
+            errs = body.get("errors") or []
+            detail = "; ".join(
+                str(x.get("message")) for x in errs if isinstance(x, dict) and x.get("message")
+            )
+        except Exception:  # noqa: BLE001
+            detail = ""
+        if detail:
+            return json.dumps(
+                {"error": f"HTTP {e.code} from Unraid API: {detail}", "http_status": e.code}
+            )
         return json.dumps({"error": f"HTTP {e.code} from Unraid API: {e.reason}"})
     except Exception as e:  # noqa: BLE001 - handlers must never raise
         return json.dumps({"error": f"{type(e).__name__}: {e}"})
@@ -652,7 +674,7 @@ def _self_container_names() -> set:
 def _protected_names() -> set:
     configured = {
         n.strip().lstrip("/").lower()
-        for n in os.environ.get("UNRAID_PROTECTED_CONTAINERS", "").split(",")
+        for n in str(_settings_mod.load().get("protected_containers") or "").split(",")
         if n.strip()
     }
     return configured | _self_container_names()
@@ -798,9 +820,13 @@ def unraid_update_containers(args: dict, **kwargs) -> str:
             }
         )
     ids = [r["id"] for r in resolved]
+    # Pulling and recreating containers routinely exceeds the default
+    # timeout. Aborting client-side does not stop the server, so a short
+    # timeout reports failure for work that actually succeeds.
     result = _run(
         "mutation($ids: [PrefixedID!]!) { docker { updateContainers(ids: $ids) { id names state } } }",
         {"ids": ids},
+        timeout=_MUTATION_TIMEOUT_SECONDS,
     )
     return json.dumps(
         {
@@ -836,6 +862,7 @@ def unraid_container_power(args: dict, **kwargs) -> str:
     result = _run(
         "mutation($id: PrefixedID!) { docker { %s(id: $id) { id names state } } }" % action,
         {"id": resolved[0]["id"]},
+        timeout=_MUTATION_TIMEOUT_SECONDS,
     )
     return json.dumps({"action": action, "name": name, "result": json.loads(result)})
 
