@@ -109,6 +109,20 @@ hermes -z "Which unraid tools do you have available, and what is my server statu
 
 The gateway log reports the scopes in effect, the key's name and roles, how many tools registered, and a warning for anything in scope the key appears unable to do.
 
+## Known limitation: update detection only covers template-managed containers
+
+`unraid_check_updates` depends on Unraid's own digest comparison, which works off a container's docker template. Containers created by Compose Manager have no template, so `isUpdateAvailable` reports null for them permanently. That is "not checkable here", not "unknown but retryable".
+
+The tool separates the two rather than lumping them together:
+
+- `updates_available` - has a newer image
+- `undetermined` - genuinely unknown, e.g. a private registry Unraid cannot query
+- `not_checkable_compose_managed` - compose-managed, update with `docker compose pull` in the project
+
+On a host with 37 containers, 13 compose-managed ones fell into the third bucket. Reporting those as "no update available" would have been wrong.
+
+Note also that `refreshDockerDigests` contacts every registry serially and routinely takes over a minute. The plugin allows 240s for it; a shorter client timeout aborts while the server keeps polling, leaving digests half-populated.
+
 ## Known upstream limitation: container logs
 
 `unraid_container_logs` depends on the API's `docker.logs` query, which is unreliable for some containers. Observed on Unraid API v4.37:

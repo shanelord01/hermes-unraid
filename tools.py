@@ -19,6 +19,12 @@ import urllib.request
 
 _TIMEOUT_SECONDS = 15
 
+# refreshDockerDigests contacts every container's registry serially, so it
+# scales with container count and routinely exceeds a minute on a busy host.
+# The default timeout would abort it client-side while the server carried on,
+# leaving digests half-populated and update status mostly "undetermined".
+_REFRESH_TIMEOUT_SECONDS = 240
+
 # ---------------------------------------------------------------------------
 # Scopes - RESOURCE:ACTION, mirroring Unraid's own permission grammar
 # ---------------------------------------------------------------------------
@@ -241,7 +247,7 @@ def _ssl_context() -> ssl.SSLContext:
     return ctx
 
 
-def _gql(query: str, variables: dict | None = None) -> dict:
+def _gql(query: str, variables: dict | None = None, timeout: int | None = None) -> dict:
     """POST a GraphQL query. Returns the decoded response dict.
     Raises urllib/json errors - callers wrap in try/except."""
     body = json.dumps({"query": query, "variables": variables or {}}).encode()
@@ -254,18 +260,20 @@ def _gql(query: str, variables: dict | None = None) -> dict:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS, context=_ssl_context()) as resp:
+    with urllib.request.urlopen(
+        req, timeout=timeout or _TIMEOUT_SECONDS, context=_ssl_context()
+    ) as resp:
         return json.loads(resp.read().decode())
 
 
-def _run(query: str, variables: dict | None = None) -> str:
+def _run(query: str, variables: dict | None = None, timeout: int | None = None) -> str:
     """Execute a query and return a JSON string per the handler contract."""
     if not _endpoint():
         return json.dumps({"error": "UNRAID_API_URL is not set"})
     if not os.environ.get("UNRAID_API_KEY"):
         return json.dumps({"error": "UNRAID_API_KEY is not set"})
     try:
-        result = _gql(query, variables)
+        result = _gql(query, variables, timeout=timeout)
     except urllib.error.HTTPError as e:
         return json.dumps({"error": f"HTTP {e.code} from Unraid API: {e.reason}"})
     except Exception as e:  # noqa: BLE001 - handlers must never raise
@@ -680,15 +688,17 @@ def unraid_check_updates(args: dict, **kwargs) -> str:
     err = _require("unraid_check_updates")
     if err:
         return err
-    refreshed = _run("mutation { refreshDockerDigests }")
+    refreshed = _run(
+        "mutation { refreshDockerDigests }", timeout=_REFRESH_TIMEOUT_SECONDS
+    )
     refresh_data = json.loads(refreshed)
-    raw = _run("{ docker { containers { names state isUpdateAvailable } } }")
+    raw = _run("{ docker { containers { names state isUpdateAvailable labels } } }")
     try:
         data = json.loads(raw)
         if "error" in data:
             return raw
         protected_set = _protected_names()
-        pending, unknown_state = [], []
+        pending, unknown_state, compose_managed = [], [], []
         for c in (data.get("docker", {}) or {}).get("containers", []) or []:
             name = (c.get("names") or ["?"])[0].lstrip("/")
             avail = c.get("isUpdateAvailable")
@@ -697,16 +707,46 @@ def unraid_check_updates(args: dict, **kwargs) -> str:
                     {"name": name, "protected": name.lower() in protected_set}
                 )
             elif avail is None:
-                unknown_state.append(name)
-        return json.dumps(
-            {
-                "refresh_ok": "error" not in refresh_data,
-                "updates_available": [p for p in pending if not p["protected"]],
-                "updates_available_but_protected": [p["name"] for p in pending if p["protected"]],
-                "undetermined": unknown_state,
-                "protected_containers": sorted(protected_set),
-            }
-        )
+                # Unraid derives update status from a container's dockerMan
+                # template. Compose-managed containers have none, so they report
+                # null forever - that is "not checkable here", not "unknown but
+                # retryable", and conflating the two sends you hunting a
+                # non-existent fault.
+                labels = c.get("labels") or {}
+                if isinstance(labels, str):
+                    try:
+                        labels = json.loads(labels)
+                    except Exception:  # noqa: BLE001
+                        labels = {}
+                if labels.get("com.docker.compose.project"):
+                    compose_managed.append(name)
+                else:
+                    unknown_state.append(name)
+        refresh_ok = "error" not in refresh_data
+        out = {
+            "refresh_ok": refresh_ok,
+            "updates_available": [p for p in pending if not p["protected"]],
+            "updates_available_but_protected": [
+                p["name"] for p in pending if p["protected"]
+            ],
+            "undetermined": unknown_state,
+            "not_checkable_compose_managed": compose_managed,
+            "protected_containers": sorted(protected_set),
+        }
+        if compose_managed:
+            out["note_compose"] = (
+                "Unraid can only detect updates for containers it manages via a docker "
+                "template. Compose-managed containers are not checkable through this API "
+                "and must be updated with `docker compose pull` in their project. Their "
+                "status here is unknown, not up to date."
+            )
+        if not refresh_ok:
+            out["refresh_error"] = refresh_data.get("error")
+            out["warning"] = (
+                "Digest refresh did not complete, so 'undetermined' entries are unknown "
+                "rather than up to date. Re-run; the server may still have been polling."
+            )
+        return json.dumps(out)
     except Exception as e:  # noqa: BLE001
         return json.dumps({"error": f"{type(e).__name__}: {e}", "raw": raw[:2000]})
 
