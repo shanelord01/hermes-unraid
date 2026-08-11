@@ -17,6 +17,11 @@ import ssl
 import urllib.error
 import urllib.request
 
+try:  # package import when loaded as a Hermes plugin
+    from . import api_map
+except ImportError:  # direct import when testing the module standalone
+    import api_map
+
 _TIMEOUT_SECONDS = 15
 
 # refreshDockerDigests contacts every container's registry serially, so it
@@ -73,6 +78,11 @@ TOOL_PERMISSIONS = {
     "unraid_install_plugin": ("CONFIG", UPDATE),
     "unraid_notification_manage": ("NOTIFICATIONS", UPDATE),
 }
+
+# Meta tools: always registered. unraid_api_capabilities only reads the
+# schema, and unraid_api enforces permissions per field at call time, so
+# neither can be gated on a single RESOURCE:ACTION.
+ALWAYS_ON_TOOLS = ("unraid_permissions", "unraid_api_capabilities", "unraid_api")
 
 
 def parse_scopes() -> set:
@@ -862,6 +872,135 @@ def unraid_install_plugin(args: dict, **kwargs) -> str:
 # ---------------------------------------------------------------------------
 # Write tools - notifications
 # ---------------------------------------------------------------------------
+
+
+def unraid_api_capabilities(args: dict, **kwargs) -> str:
+    """List every API field, its required permission, and whether it is in scope.
+
+    Field names are not guessable (the rclone mutation is createRCloneRemote,
+    not createRemote), so discovery has to come from the schema rather than
+    from the model's priors.
+    """
+    state = api_map.load(_run)
+    if state.get("error"):
+        return json.dumps({"error": f"schema introspection failed: {state['error']}"})
+    needle = (args.get("contains") or "").lower()
+    only_avail = bool(args.get("only_available"))
+    namespaces = state.get("namespaces") or {}
+    ns_by_type = {v: k for k, v in namespaces.items()}
+    rows = []
+    for key, (resource, action) in sorted((state.get("map") or {}).items()):
+        type_name, field = key.split(".", 1)
+        if type_name == "Query":
+            call = field
+        elif type_name == "Mutation":
+            call = f"mutation {field}"
+        else:
+            call = f"mutation {ns_by_type.get(type_name, type_name)} {{ {field} }}"
+        available = has_scope(resource, action)
+        if only_avail and not available:
+            continue
+        if needle and needle not in call.lower() and needle not in resource.lower():
+            continue
+        rows.append(
+            {"call": call, "permission": f"{resource}:{action}", "in_scope": available}
+        )
+    return json.dumps(
+        {
+            "total": len(rows),
+            "in_scope": sum(1 for r in rows if r["in_scope"]),
+            "configured_scopes": sorted(f"{r}:{a}" for r, a in parse_scopes()),
+            "fields": rows,
+        }
+    )
+
+
+def _protected_ids() -> dict:
+    """{lowercased name: id} for protected containers, best effort."""
+    out = {}
+    try:
+        data = json.loads(_run("{ docker { containers { id names } } }"))
+        protected = _protected_names()
+        for c in (data.get("docker", {}) or {}).get("containers", []) or []:
+            for n in c.get("names") or []:
+                key = n.lstrip("/").lower()
+                if key in protected:
+                    out[key] = c.get("id")
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def unraid_api(args: dict, **kwargs) -> str:
+    """Run any Unraid API query or mutation, gated on UNRAID_SCOPES.
+
+    Every field in the document is resolved to its RESOURCE:ACTION and checked
+    before anything executes. Fields whose permission cannot be determined are
+    refused rather than allowed, so an unrecognised or newly added field fails
+    closed.
+    """
+    document = (args.get("document") or "").strip()
+    if not document:
+        return json.dumps({"error": "document is required"})
+    variables = args.get("variables") or {}
+    if isinstance(variables, str):
+        try:
+            variables = json.loads(variables)
+        except Exception:  # noqa: BLE001
+            return json.dumps({"error": "variables must be a JSON object"})
+
+    is_mutation = bool(re.search(r"^\s*mutation\b|\bmutation\s*[{(]", document, re.I))
+    selections = api_map.parse_fields(document)
+    if not selections:
+        return json.dumps({"error": "could not identify any field in the document"})
+
+    checked, denied = [], []
+    for root, nested in selections:
+        perm = api_map.permission_for(_run, root, nested, is_mutation=is_mutation)
+        label = f"{root}.{nested}" if nested else root
+        if perm == "public":
+            checked.append({"field": label, "permission": "public"})
+            continue
+        if perm is None:
+            denied.append(
+                f"{label}: could not determine required permission, refusing (fail closed)"
+            )
+            continue
+        resource, action = perm
+        if has_scope(resource, action):
+            checked.append({"field": label, "permission": f"{resource}:{action}"})
+        else:
+            denied.append(f"{label}: needs {resource}:{action}, not in UNRAID_SCOPES")
+    if denied:
+        return json.dumps(
+            {
+                "error": "refused - required permissions are not in scope",
+                "denied": denied,
+                "allowed": checked,
+                "hint": "Use unraid_api_capabilities to see what is available.",
+            }
+        )
+
+    # Protected containers are a plugin-side concept the server knows nothing
+    # about, so the guard has to be applied here. Conservative by design: if a
+    # protected container's id or name appears anywhere in a docker mutation,
+    # refuse the whole document rather than trying to prove which field it
+    # belongs to.
+    if is_mutation and any(c["permission"].startswith("DOCKER:") for c in checked):
+        haystack = (document + json.dumps(variables)).lower()
+        for name, cid in _protected_ids().items():
+            if (cid and cid.lower() in haystack) or re.search(
+                rf'"/?{re.escape(name)}"', haystack
+            ):
+                return json.dumps(
+                    {
+                        "error": f"refused - document references protected container '{name}'",
+                        "protected_containers": sorted(_protected_names()),
+                    }
+                )
+
+    result = _run(document, variables, timeout=_REFRESH_TIMEOUT_SECONDS if is_mutation else None)
+    return json.dumps({"permissions_checked": checked, "result": json.loads(result)})
 
 
 def unraid_notification_manage(args: dict, **kwargs) -> str:

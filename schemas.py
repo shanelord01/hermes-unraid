@@ -107,6 +107,63 @@ VMS = {
     "parameters": {"type": "object", "properties": {}},
 }
 
+API_CAPABILITIES = {
+    "name": "unraid_api_capabilities",
+    "description": (
+        "Discover the full Unraid API: every query and mutation field, the "
+        "RESOURCE:ACTION permission it needs, and whether it is currently in "
+        "scope. Use this BEFORE unraid_api - field names are not guessable "
+        "(the rclone mutation is createRCloneRemote, not createRemote) and the "
+        "list comes from the live schema. Filter with 'contains' to avoid "
+        "pulling all ~120 fields."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "contains": {
+                "type": "string",
+                "description": "Substring filter on the call or resource, e.g. 'parity', 'vm', 'DOCKER'",
+            },
+            "only_available": {
+                "type": "boolean",
+                "description": "Only return fields that are in scope right now",
+            },
+        },
+    },
+}
+
+API = {
+    "name": "unraid_api",
+    "description": (
+        "Run any Unraid API query or mutation. Every field in the document is "
+        "resolved to its required RESOURCE:ACTION and checked against "
+        "UNRAID_SCOPES before anything executes; fields whose permission "
+        "cannot be determined are refused. This is the full-API escape hatch "
+        "for anything the dedicated unraid_* tools do not cover: array and "
+        "parity operations, VM control, plugin management, flash backup, UPS, "
+        "rclone, API keys. Call unraid_api_capabilities first to find the "
+        "correct field name and check it is in scope. Mutations touching a "
+        "protected container are refused."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "document": {
+                "type": "string",
+                "description": (
+                    "A GraphQL document, e.g. 'mutation { parityCheck { start } }' "
+                    "or '{ upsDevices { name status } }'"
+                ),
+            },
+            "variables": {
+                "type": "object",
+                "description": "Optional GraphQL variables as a JSON object",
+            },
+        },
+        "required": ["document"],
+    },
+}
+
 PERMISSIONS = {
     "name": "unraid_permissions",
     "description": (

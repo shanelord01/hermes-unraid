@@ -82,14 +82,18 @@ def register(ctx):
         ctx.register_tool(name=name, toolset="unraid", schema=schema, handler=handler)
         registered.append(name)
 
-    # Always available: it is the tool you need precisely when nothing else
-    # registered, and it reads no server resource beyond the key's own identity.
-    ctx.register_tool(
-        name="unraid_permissions",
-        toolset="unraid",
-        schema=schemas.PERMISSIONS,
-        handler=tools.unraid_permissions,
-    )
+    # Always available. unraid_permissions is the tool you need precisely when
+    # nothing else registered. The other two cover the rest of the API without
+    # a tool per field: capabilities reads the schema, and unraid_api resolves
+    # and enforces each field's permission at call time, so neither can be
+    # gated on one RESOURCE:ACTION up front.
+    for name, schema, handler in (
+        ("unraid_permissions", schemas.PERMISSIONS, tools.unraid_permissions),
+        ("unraid_api_capabilities", schemas.API_CAPABILITIES, tools.unraid_api_capabilities),
+        ("unraid_api", schemas.API, tools.unraid_api),
+    ):
+        ctx.register_tool(name=name, toolset="unraid", schema=schema, handler=handler)
+        registered.append(name)
 
     def _handle_unraid(raw_args: str) -> str:
         return tools.unraid_overview({})

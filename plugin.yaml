@@ -1,18 +1,22 @@
 name: unraid
-version: 2.0.1
+version: 3.0.0
 description: >-
   Unraid server tools - array health, disks/temps, docker container states,
   parity, shares, VMs, system notifications, and host/container logs for
   troubleshooting, via the official Unraid GraphQL API. Every tool declares a
   RESOURCE:ACTION permission in Unraid's own grammar, and UNRAID_SCOPES
-  controls which are registered. Defaults to read-only. Container updates,
+  controls what is permitted. The whole API is reachable through a generic
+  permission-checked passthrough, with the permission map derived by schema
+  introspection rather than hand-maintained. Defaults to read-only. Container updates,
   container lifecycle, plugin installs, and notification management are opt-in.
   Designed for agents running in a container on the Unraid host they manage,
   with the agent's own container protected from self-actuation.
 author: Shane Lord
 provides_tools:
-  # Always registered - reports which of the below are live and why.
-  - unraid_permissions
+  # Always registered.
+  - unraid_permissions            # which tools are live and why
+  - unraid_api_capabilities       # discover all ~120 API fields + their permissions
+  - unraid_api                    # run any query/mutation, permission-checked per field
   # Registered when the matching RESOURCE:ACTION is present in UNRAID_SCOPES.
   # The default scope (*:READ_ANY) covers every READ_ANY tool below.
   - unraid_overview               # ARRAY:READ_ANY

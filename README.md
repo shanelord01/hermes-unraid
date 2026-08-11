@@ -30,6 +30,8 @@ Run `unraid_permissions` (always registered) to see which tools are live and, fo
 | Tool | Permission | What it does |
 |------|-----------|--------------|
 | `unraid_permissions` | none | Which tools are live and why the others are not |
+| `unraid_api_capabilities` | none | Discover all ~120 API fields, their permissions, and what is in scope |
+| `unraid_api` | per field | Run any query or mutation, permission-checked field by field |
 | `unraid_overview` | `ARRAY:READ_ANY` | Array state, capacity, uptime, container counts, unread notifications |
 | `unraid_parity` | `ARRAY:READ_ANY` | Parity check history and whether one is running now |
 | `unraid_disks` | `DISK:READ_ANY` | Every array/parity/cache disk with status, temperature, usage |
@@ -48,6 +50,32 @@ Run `unraid_permissions` (always registered) to see which tools are live and, fo
 | `unraid_install_plugin` | `CONFIG:UPDATE_ANY` | Install or update an Unraid plugin from its .plg URL |
 
 Also registers a `/unraid` slash command for a quick status from any connected chat platform.
+
+## Full API access
+
+The dedicated tools above cover the common cases. Everything else in the API - array and parity operations, VM control, plugin and API key management, flash backup, UPS, rclone, docker folders - is reachable through `unraid_api`, without registering 120 separate tools.
+
+It is not an unchecked escape hatch. The Unraid schema documents its own authorisation in field descriptions:
+
+```
+Action: **UPDATE_ANY**   Resource: **DOCKER**
+```
+
+120 of 151 fields carry that, so the permission map is **introspected from the live schema** rather than hand-maintained, and cannot drift as Unraid adds fields. The remaining 31 (notification mutations, UPS and public queries) come from a small verified fallback table.
+
+Every field in a submitted document is resolved and checked before anything executes:
+
+```
+mutation { array { setState(input:{desiredState:STOP}) { state } } }
+-> refused: array.setState needs ARRAY:UPDATE_ANY, not in UNRAID_SCOPES
+
+mutation { totallyMadeUpField { x } }
+-> refused: could not determine required permission (fail closed)
+```
+
+Unrecognised fields are refused rather than allowed, so a newly added or misspelled field fails closed. The protected-container guard applies here too: a docker mutation referencing a protected container's name or id is refused outright.
+
+Use `unraid_api_capabilities` first. Field names are not guessable - the rclone mutation is `createRCloneRemote`, not `createRemote`.
 
 ## Protected containers
 
