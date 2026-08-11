@@ -2,16 +2,227 @@
 
 Contract per Hermes plugin rules: handlers accept (args: dict, **kwargs),
 always return a JSON string, and never raise.
+
+Every tool declares a RESOURCE:ACTION permission using Unraid's own grammar.
+UNRAID_SCOPES decides which are registered; it defaults to *:READ_ANY, so the
+plugin is read-only unless actuation is granted explicitly. See
+__init__.register() for the registration table.
 """
 
 import json
 import os
 import re
+import socket
 import ssl
 import urllib.error
 import urllib.request
 
 _TIMEOUT_SECONDS = 15
+
+# ---------------------------------------------------------------------------
+# Scopes - RESOURCE:ACTION, mirroring Unraid's own permission grammar
+# ---------------------------------------------------------------------------
+# Unraid's API keys are described as RESOURCE:ACTION pairs (DOCKER:READ_ANY,
+# NOTIFICATIONS:UPDATE_ANY, ...) across 29 resources and 8 actions. We use the
+# same vocabulary rather than inventing one, so what you write in
+# UNRAID_SCOPES matches what you granted the key with `unraid-api apikey`.
+#
+#   UNRAID_SCOPES="DOCKER:READ_ANY,DOCKER:UPDATE_ANY,LOGS:READ_ANY"
+#   UNRAID_SCOPES="DOCKER:*,LOGS:READ_ANY"   # every action on DOCKER
+#   UNRAID_SCOPES="*:READ_ANY"               # everything, read-only (default)
+#
+# Unset defaults to *:READ_ANY, which is the behaviour this plugin shipped
+# with before scopes existed: all read tools, no actuation.
+#
+# This is the client-side half only. The key's own permissions are enforced by
+# the server regardless, so a VIEWER key still refuses mutations even if a
+# scope is set here. What this layer adds is intent (the operator says what
+# the agent may attempt), tool-surface control (unscoped tools are never
+# registered, so the model cannot plan around them), and the protected
+# container rules further down, which the server has no concept of.
+
+_DEFAULT_SCOPES = "*:READ_ANY"
+
+READ = "READ_ANY"
+UPDATE = "UPDATE_ANY"
+
+# Tool -> the single permission it requires. Aggregate tools such as
+# unraid_overview touch several resources; they declare their headline one and
+# return whatever the key is allowed to see, since GraphQL answers partially.
+TOOL_PERMISSIONS = {
+    "unraid_overview": ("ARRAY", READ),
+    "unraid_disks": ("DISK", READ),
+    "unraid_containers": ("DOCKER", READ),
+    "unraid_notifications": ("NOTIFICATIONS", READ),
+    "unraid_parity": ("ARRAY", READ),
+    "unraid_shares": ("SHARE", READ),
+    "unraid_metrics": ("INFO", READ),
+    "unraid_vms": ("VMS", READ),
+    "unraid_logs": ("LOGS", READ),
+    "unraid_container_logs": ("LOGS", READ),
+    "unraid_graphql": ("INFO", READ),
+    "unraid_check_updates": ("DOCKER", UPDATE),
+    "unraid_update_containers": ("DOCKER", UPDATE),
+    "unraid_container_power": ("DOCKER", UPDATE),
+    "unraid_install_plugin": ("CONFIG", UPDATE),
+    "unraid_notification_manage": ("NOTIFICATIONS", UPDATE),
+}
+
+
+def parse_scopes() -> set:
+    """Configured scopes as a set of (RESOURCE, ACTION), upper-cased.
+
+    A bare resource ("DOCKER") means every action on it. Unknown or malformed
+    entries are ignored rather than raising - a typo should cost you a tool,
+    not the whole plugin.
+    """
+    raw = os.environ.get("UNRAID_SCOPES", "").strip() or _DEFAULT_SCOPES
+    out = set()
+    for item in raw.split(","):
+        item = item.strip().upper()
+        if not item:
+            continue
+        if ":" in item:
+            resource, _, action = item.partition(":")
+            resource, action = resource.strip(), action.strip()
+        else:
+            resource, action = item, "*"
+        if resource:
+            out.add((resource, action or "*"))
+    return out
+
+
+def has_scope(resource: str, action: str) -> bool:
+    resource, action = resource.upper(), action.upper()
+    for scope_resource, scope_action in parse_scopes():
+        if scope_resource in ("*", resource) and scope_action in ("*", action):
+            return True
+    return False
+
+
+def tool_allowed(tool_name: str) -> bool:
+    perm = TOOL_PERMISSIONS.get(tool_name)
+    if not perm:
+        return False
+    return has_scope(*perm)
+
+
+def _require(tool_name: str):
+    """Return an error JSON string if the tool is out of scope, else None.
+
+    Tools are only registered when in scope, so this guards against a stale
+    registration or a direct call.
+    """
+    if tool_allowed(tool_name):
+        return None
+    resource, action = TOOL_PERMISSIONS.get(tool_name, ("?", "?"))
+    return json.dumps(
+        {
+            "error": f"{tool_name} requires scope {resource}:{action}, which is not configured.",
+            "hint": "Add it to UNRAID_SCOPES, and grant the same permission on the API key.",
+        }
+    )
+
+
+def key_permissions() -> dict:
+    """The API key's effective permissions, as reported by the server.
+
+    Effective access is the union of two things: the permissions granted
+    explicitly on the key, and those implied by its roles. me.permissions only
+    returns the explicit half, so reading it alone under-reports - a VIEWER key
+    with no explicit LOGS grant can still read logs, because the role carries
+    LOGS:READ_ANY. Reporting that as "blocked" would be wrong, so both halves
+    are merged here.
+
+    Returns {"name", "roles", "permissions": {RESOURCE: [ACTION, ...]},
+    "explicit": {...}} or {"error": ...} if it cannot be determined.
+    """
+    raw = _run("{ me { name roles permissions { resource actions } } }")
+    try:
+        data = json.loads(raw)
+        if "error" in data:
+            return {"error": data["error"]}
+        me = data.get("me", {}) or {}
+        explicit = {}
+        for p in me.get("permissions") or []:
+            resource = (p.get("resource") or "").upper()
+            if resource:
+                explicit.setdefault(resource, set()).update(
+                    a.upper() for a in (p.get("actions") or [])
+                )
+        roles = me.get("roles") or []
+        effective = {r: set(a) for r, a in explicit.items()}
+        if roles:
+            role_list = ", ".join(str(r).upper() for r in roles)
+            role_raw = _run(
+                "{ getPermissionsForRoles(roles: [%s]) { resource actions } }" % role_list
+            )
+            role_data = json.loads(role_raw)
+            if "error" not in role_data:
+                for p in role_data.get("getPermissionsForRoles") or []:
+                    resource = (p.get("resource") or "").upper()
+                    if resource:
+                        effective.setdefault(resource, set()).update(
+                            a.upper() for a in (p.get("actions") or [])
+                        )
+        return {
+            "name": me.get("name"),
+            "roles": roles,
+            "permissions": {r: sorted(a) for r, a in effective.items()},
+            "explicit": {r: sorted(a) for r, a in explicit.items()},
+        }
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def permission_report() -> dict:
+    """Reconcile configured scopes against the key's actual permissions.
+
+    Answers the question an operator actually has: which tools are live, and
+    for the ones that are not, is it my config or my API key?
+    """
+    key = key_permissions()
+    key_perms = key.get("permissions") or {}
+    key_known = "error" not in key
+    live, blocked_by_key, not_configured = [], [], []
+    for tool, (resource, action) in sorted(TOOL_PERMISSIONS.items()):
+        if not has_scope(resource, action):
+            not_configured.append(f"{tool} ({resource}:{action})")
+            continue
+        granted = key_perms.get(resource, [])
+        if key_known and action not in granted:
+            blocked_by_key.append(
+                f"{tool} needs {resource}:{action}; key's effective permissions for "
+                f"{resource} are {granted or 'none'}"
+            )
+        else:
+            live.append(tool)
+    report = {
+        "configured_scopes": sorted(f"{r}:{a}" for r, a in parse_scopes()),
+        "api_key_name": key.get("name"),
+        "api_key_roles": key.get("roles"),
+        "tools_registered": live,
+        "tools_likely_blocked_by_api_key": blocked_by_key,
+        "tools_not_in_scope": not_configured,
+    }
+    if blocked_by_key:
+        # Advisory, not authoritative: the server is the only thing that
+        # decides. Registration deliberately keys off scopes alone so a
+        # mis-read permission cannot make a working tool disappear.
+        report["note_on_blocked"] = (
+            "These are in scope but the API key appears to lack the permission. They are "
+            "still registered - the server decides. Try one; if it returns a permission "
+            "error, grant the permission on the key."
+        )
+    if not key_known:
+        report["api_key_permissions_unknown"] = key.get("error")
+        report["note"] = "Could not read key permissions; tools_live reflects configured scopes only."
+    return report
+
+
+def unraid_permissions(args: dict, **kwargs) -> str:
+    """Report which unraid_* tools are live and why the others are not."""
+    return json.dumps(permission_report())
 
 
 def _endpoint() -> str:
@@ -151,11 +362,13 @@ def unraid_notifications(args: dict, **kwargs) -> str:
     if ntype not in ("UNREAD", "ARCHIVE"):
         ntype = "UNREAD"
     limit = min(int(args.get("limit") or 10), 50)
+    # id is returned so notifications can be archived by the management tool -
+    # every mutation keys off it, and it is not otherwise discoverable.
     return _run(
         """
         query($filter: NotificationFilter!) {
           notifications { list(filter: $filter) {
-            subject description importance timestamp } } }
+            id subject description importance timestamp } } }
         """,
         {"filter": {"type": ntype, "offset": 0, "limit": limit}},
     )
@@ -201,13 +414,451 @@ def unraid_vms(args: dict, **kwargs) -> str:
     return _run("{ vms { domains { name state } } }")
 
 
+# ---------------------------------------------------------------------------
+# Logs (read-only - no write scope required)
+# ---------------------------------------------------------------------------
+# Log volume is the practical risk here, not permissions: a syslog tail can
+# swamp a model's context. Every path caps lines and truncates the payload,
+# and the caps are deliberately modest - ask for more explicitly if needed.
+
+_LOG_LINES_DEFAULT = 100
+_LOG_LINES_MAX = 500
+_LOG_CHARS_MAX = 20000
+
+
+def _container_id_by_name(name: str):
+    """Resolve a container name to its PrefixedID, or None.
+
+    Deliberately does not consult the protected list: reading a container's
+    logs is harmless, including the agent's own, and refusing that would make
+    self-diagnosis impossible.
+    """
+    raw = _run("{ docker { containers { id names } } }")
+    data = json.loads(raw)
+    if "error" in data:
+        raise RuntimeError(data["error"])
+    key = str(name).strip().lstrip("/").lower()
+    for c in (data.get("docker", {}) or {}).get("containers", []) or []:
+        for n in c.get("names") or []:
+            if n.lstrip("/").lower() == key:
+                return c.get("id")
+    return None
+
+
+def unraid_logs(args: dict, **kwargs) -> str:
+    """List server log files, or tail one when a path is given."""
+    path = (args.get("path") or "").strip()
+    if not path:
+        raw = _run("{ logFiles { name path size modifiedAt } }")
+        try:
+            data = json.loads(raw)
+            if "error" in data:
+                return raw
+            files = data.get("logFiles", []) or []
+            # Empty logs are noise when choosing what to read.
+            nonempty = [f for f in files if (f.get("size") or 0) > 0]
+            return json.dumps(
+                {
+                    "count": len(nonempty),
+                    "hint": "call again with a path to read one",
+                    "files": sorted(nonempty, key=lambda f: f.get("modifiedAt") or "", reverse=True),
+                }
+            )
+        except Exception as e:  # noqa: BLE001
+            return json.dumps({"error": f"{type(e).__name__}: {e}", "raw": raw[:2000]})
+
+    lines = min(max(int(args.get("lines") or _LOG_LINES_DEFAULT), 1), _LOG_LINES_MAX)
+    raw = _run(
+        "query($path: String!, $lines: Int) { logFile(path: $path, lines: $lines) { path content totalLines startLine } }",
+        {"path": path, "lines": lines},
+    )
+    try:
+        data = json.loads(raw)
+        if "error" in data:
+            return raw
+        lf = data.get("logFile", {}) or {}
+        content = lf.get("content") or ""
+        truncated = len(content) > _LOG_CHARS_MAX
+        return json.dumps(
+            {
+                "path": lf.get("path"),
+                "total_lines": lf.get("totalLines"),
+                "start_line": lf.get("startLine"),
+                "truncated": truncated,
+                "content": content[-_LOG_CHARS_MAX:] if truncated else content,
+            }
+        )
+    except Exception as e:  # noqa: BLE001
+        return json.dumps({"error": f"{type(e).__name__}: {e}", "raw": raw[:2000]})
+
+
+def unraid_container_logs(args: dict, **kwargs) -> str:
+    """Tail a docker container's logs by container name."""
+    name = (args.get("name") or "").strip()
+    if not name:
+        return json.dumps({"error": "name is required"})
+    tail = min(max(int(args.get("tail") or _LOG_LINES_DEFAULT), 1), _LOG_LINES_MAX)
+    try:
+        cid = _container_id_by_name(name)
+    except Exception as e:  # noqa: BLE001
+        return json.dumps({"error": f"could not list containers: {e}"})
+    if not cid:
+        return json.dumps({"error": f"no such container: {name}"})
+    since = (args.get("since") or "").strip()
+
+    def fetch(use_tail: bool):
+        variables = {"id": cid}
+        parts_sig, parts_call = ["$id: PrefixedID!"], ["id: $id"]
+        if use_tail:
+            variables["tail"] = tail
+            parts_sig.append("$tail: Int")
+            parts_call.append("tail: $tail")
+        if since:
+            variables["since"] = since
+            parts_sig.append("$since: DateTime")
+            parts_call.append("since: $since")
+        query = (
+            f"query({', '.join(parts_sig)}) {{ docker {{ logs({', '.join(parts_call)}) "
+            "{ lines { timestamp message } } } }"
+        )
+        raw_resp = _run(query, variables)
+        parsed = json.loads(raw_resp)
+        if "error" in parsed:
+            return None, raw_resp
+        got = ((parsed.get("docker", {}) or {}).get("logs", {}) or {}).get("lines", []) or []
+        return got, raw_resp
+
+    try:
+        lines, raw = fetch(use_tail=True)
+        if lines is None:
+            return raw
+        # Upstream quirk: the tail argument returns zero lines for some
+        # containers that demonstrably have logs (and occasionally returns
+        # fewer lines for a larger tail). Retry without it rather than
+        # reporting an empty log, which reads as "container is quiet" and is
+        # actively misleading when troubleshooting.
+        used_fallback = False
+        if not lines:
+            retry, raw_retry = fetch(use_tail=False)
+            if retry:
+                lines, raw, used_fallback = retry[-tail:], raw_retry, True
+        text = "\n".join(
+            f"{ln.get('timestamp') or ''} {ln.get('message') or ''}".strip() for ln in lines
+        )
+        truncated = len(text) > _LOG_CHARS_MAX
+        out = {
+            "container": name,
+            "line_count": len(lines),
+            "truncated": truncated,
+            "logs": text[-_LOG_CHARS_MAX:] if truncated else text,
+        }
+        if used_fallback:
+            out["note"] = "tail returned nothing; retried without it (upstream API quirk)"
+        if not lines:
+            out["warning"] = (
+                "The Unraid API returned no log lines for this container. This is a known "
+                "upstream limitation for some containers and does NOT mean the container is "
+                "silent - check `docker logs` on the host before drawing conclusions."
+            )
+        return json.dumps(out)
+    except Exception as e:  # noqa: BLE001
+        return json.dumps({"error": f"{type(e).__name__}: {e}"})
+
+
 _MUTATION_RE = re.compile(r"^\s*mutation\b", re.IGNORECASE)
 
 
 def unraid_graphql(args: dict, **kwargs) -> str:
+    # This tool stays read-only unconditionally, even with write scopes
+    # enabled. Allowing raw mutations here would bypass every scope check and
+    # every protected-container guard below, so the scope system would be
+    # decorative. Write actions get their own narrow, guarded tools.
     query = args.get("query") or ""
     if _MUTATION_RE.search(query) or re.search(r"\bmutation\s*[{(]", query, re.IGNORECASE):
-        return json.dumps({"error": "Mutations are not permitted - this plugin is read-only by design."})
+        return json.dumps(
+            {
+                "error": "Mutations are not permitted through unraid_graphql - it is read-only by design.",
+                "hint": "Use the dedicated write tools (they enforce scopes and protected containers).",
+            }
+        )
     if not query.strip():
         return json.dumps({"error": "query is required"})
     return _run(query)
+
+
+# ---------------------------------------------------------------------------
+# Protected containers
+# ---------------------------------------------------------------------------
+# The agent typically runs *on* the Unraid host it is managing. Updating its
+# own container kills the agent mid-call, and the update is reported as a
+# failure even when it succeeded. Worse, a sidecar sharing the agent's network
+# namespace (network_mode: service:<agent>) is silently orphaned by the
+# recreate and has to be recreated itself - it keeps reporting healthy while
+# having no working network.
+#
+# Self-detection covers the agent's own container. Sidecars cannot be detected
+# from inside (they are separate containers), so name them explicitly in
+# UNRAID_PROTECTED_CONTAINERS.
+
+_self_names_cache = None
+
+
+def _self_container_names() -> set:
+    """Names of the container this code is running in, best-effort.
+
+    Docker sets the hostname to the short container id unless overridden, so
+    we match that against the container list. Returns an empty set if we
+    cannot tell - callers must not treat that as "nothing is protected".
+    """
+    global _self_names_cache
+    if _self_names_cache is not None:
+        return _self_names_cache
+    found = set()
+    try:
+        host = socket.gethostname().strip().lower()
+        if host:
+            raw = _run("{ docker { containers { id names } } }")
+            data = json.loads(raw)
+            for c in (data.get("docker", {}) or {}).get("containers", []) or []:
+                cid = str(c.get("id") or "").lower()
+                # PrefixedID may carry a prefix; compare on the bare id tail.
+                bare = cid.split(":")[-1]
+                if host and (bare.startswith(host) or host.startswith(bare[:12])):
+                    found |= {n.lstrip("/").lower() for n in (c.get("names") or [])}
+    except Exception:  # noqa: BLE001 - detection is best-effort, never fatal
+        found = set()
+    _self_names_cache = found
+    return found
+
+
+def _protected_names() -> set:
+    configured = {
+        n.strip().lstrip("/").lower()
+        for n in os.environ.get("UNRAID_PROTECTED_CONTAINERS", "").split(",")
+        if n.strip()
+    }
+    return configured | _self_container_names()
+
+
+def _resolve_containers(names: list) -> tuple:
+    """Map container names to ids. Returns (resolved, unknown, protected).
+
+    resolved is a list of {"name","id"}; unknown and protected are name lists.
+    """
+    raw = _run("{ docker { containers { id names } } }")
+    data = json.loads(raw)
+    if "error" in data:
+        raise RuntimeError(data["error"])
+    by_name = {}
+    for c in (data.get("docker", {}) or {}).get("containers", []) or []:
+        for n in c.get("names") or []:
+            by_name[n.lstrip("/").lower()] = c.get("id")
+    protected_set = _protected_names()
+    resolved, unknown, protected = [], [], []
+    for raw_name in names:
+        key = str(raw_name).strip().lstrip("/").lower()
+        if key in protected_set:
+            protected.append(raw_name)
+        elif key in by_name:
+            resolved.append({"name": raw_name, "id": by_name[key]})
+        else:
+            unknown.append(raw_name)
+    return resolved, unknown, protected
+
+
+# ---------------------------------------------------------------------------
+# Write tools - docker
+# ---------------------------------------------------------------------------
+
+
+def unraid_check_updates(args: dict, **kwargs) -> str:
+    """Refresh registry digests, then report which containers have updates.
+
+    isUpdateAvailable reads null until refreshDockerDigests has run, so the
+    refresh is not optional - querying alone tells you nothing.
+    """
+    err = _require("unraid_check_updates")
+    if err:
+        return err
+    refreshed = _run("mutation { refreshDockerDigests }")
+    refresh_data = json.loads(refreshed)
+    raw = _run("{ docker { containers { names state isUpdateAvailable } } }")
+    try:
+        data = json.loads(raw)
+        if "error" in data:
+            return raw
+        protected_set = _protected_names()
+        pending, unknown_state = [], []
+        for c in (data.get("docker", {}) or {}).get("containers", []) or []:
+            name = (c.get("names") or ["?"])[0].lstrip("/")
+            avail = c.get("isUpdateAvailable")
+            if avail is True:
+                pending.append(
+                    {"name": name, "protected": name.lower() in protected_set}
+                )
+            elif avail is None:
+                unknown_state.append(name)
+        return json.dumps(
+            {
+                "refresh_ok": "error" not in refresh_data,
+                "updates_available": [p for p in pending if not p["protected"]],
+                "updates_available_but_protected": [p["name"] for p in pending if p["protected"]],
+                "undetermined": unknown_state,
+                "protected_containers": sorted(protected_set),
+            }
+        )
+    except Exception as e:  # noqa: BLE001
+        return json.dumps({"error": f"{type(e).__name__}: {e}", "raw": raw[:2000]})
+
+
+def unraid_update_containers(args: dict, **kwargs) -> str:
+    """Update named containers to their latest images.
+
+    Names must be listed explicitly. updateAllContainers is deliberately not
+    exposed: it takes no arguments and so cannot honour the protected list,
+    which would let the agent update itself.
+    """
+    err = _require("unraid_update_containers")
+    if err:
+        return err
+    names = args.get("names") or []
+    if isinstance(names, str):
+        names = [names]
+    if not names:
+        return json.dumps({"error": "names is required (a list of container names)"})
+    try:
+        resolved, unknown, protected = _resolve_containers(names)
+    except Exception as e:  # noqa: BLE001
+        return json.dumps({"error": f"could not list containers: {e}"})
+    if not resolved:
+        # Say which of the two reasons applied - "nothing to update" alone
+        # reads as "already current", which is the opposite of what happened.
+        if protected and not unknown:
+            reason = f"every requested container is protected: {', '.join(protected)}"
+        elif unknown and not protected:
+            reason = f"no such container: {', '.join(unknown)}"
+        else:
+            reason = "requested containers were either protected or unknown"
+        return json.dumps(
+            {
+                "error": reason,
+                "unknown": unknown,
+                "refused_protected": protected,
+                "protected_containers": sorted(_protected_names()),
+            }
+        )
+    ids = [r["id"] for r in resolved]
+    result = _run(
+        "mutation($ids: [PrefixedID!]!) { docker { updateContainers(ids: $ids) { id names state } } }",
+        {"ids": ids},
+    )
+    return json.dumps(
+        {
+            "requested": [r["name"] for r in resolved],
+            "refused_protected": protected,
+            "unknown": unknown,
+            "result": json.loads(result),
+        }
+    )
+
+
+def unraid_container_power(args: dict, **kwargs) -> str:
+    """Start, stop, or restart a single container."""
+    err = _require("unraid_container_power")
+    if err:
+        return err
+    action = (args.get("action") or "").strip().lower()
+    if action not in ("start", "stop", "restart"):
+        return json.dumps({"error": "action must be one of: start, stop, restart"})
+    name = args.get("name")
+    if not name:
+        return json.dumps({"error": "name is required"})
+    try:
+        resolved, unknown, protected = _resolve_containers([name])
+    except Exception as e:  # noqa: BLE001
+        return json.dumps({"error": f"could not list containers: {e}"})
+    if protected:
+        return json.dumps(
+            {"error": f"'{name}' is protected", "protected_containers": sorted(_protected_names())}
+        )
+    if not resolved:
+        return json.dumps({"error": f"no such container: {name}", "unknown": unknown})
+    result = _run(
+        "mutation($id: PrefixedID!) { docker { %s(id: $id) { id names state } } }" % action,
+        {"id": resolved[0]["id"]},
+    )
+    return json.dumps({"action": action, "name": name, "result": json.loads(result)})
+
+
+# ---------------------------------------------------------------------------
+# Write tools - plugins
+# ---------------------------------------------------------------------------
+
+
+def unraid_install_plugin(args: dict, **kwargs) -> str:
+    """Install or update an Unraid plugin from its .plg URL.
+
+    Unraid updates a plugin by reinstalling from the same URL, so this covers
+    both cases. The URL is the operator's responsibility - installing a plugin
+    is arbitrary code execution on the host.
+    """
+    err = _require("unraid_install_plugin")
+    if err:
+        return err
+    url = (args.get("url") or "").strip()
+    if not url:
+        return json.dumps({"error": "url is required (the plugin .plg URL)"})
+    if not url.lower().startswith("https://"):
+        return json.dumps({"error": "url must be https://"})
+    payload = {"url": url}
+    if args.get("forced"):
+        payload["forced"] = True
+    return _run(
+        "mutation($input: InstallPluginInput!) { unraidPlugins { installPlugin(input: $input) } }",
+        {"input": payload},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Write tools - notifications
+# ---------------------------------------------------------------------------
+
+
+def unraid_notification_manage(args: dict, **kwargs) -> str:
+    """Archive or mark-unread Unraid notifications.
+
+    Deletion is deliberately not exposed: archiving clears the unread count
+    without destroying the record, which is what "deal with it" nearly always
+    means, and it is reversible.
+    """
+    err = _require("unraid_notification_manage")
+    if err:
+        return err
+    action = (args.get("action") or "").strip().lower()
+    if action == "archive":
+        ids = args.get("ids") or ([args["id"]] if args.get("id") else [])
+        if not ids:
+            return json.dumps({"error": "ids (or id) is required for archive"})
+        return _run(
+            "mutation($ids: [PrefixedID!]!) { archiveNotifications(ids: $ids) { unread { total } } }",
+            {"ids": ids},
+        )
+    if action == "unread":
+        nid = args.get("id")
+        if not nid:
+            return json.dumps({"error": "id is required for unread"})
+        return _run(
+            "mutation($id: PrefixedID!) { unreadNotification(id: $id) { id type } }",
+            {"id": nid},
+        )
+    if action == "archive_all":
+        importance = (args.get("importance") or "").strip().upper()
+        if importance and importance not in ("ALERT", "WARNING", "INFO"):
+            return json.dumps({"error": "importance must be ALERT, WARNING, or INFO"})
+        if importance:
+            return _run(
+                "mutation($i: NotificationImportance) { archiveAll(importance: $i) { unread { total } } }",
+                {"i": importance},
+            )
+        return _run("mutation { archiveAll { unread { total } } }")
+    return json.dumps({"error": "action must be one of: archive, unread, archive_all"})

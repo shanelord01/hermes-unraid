@@ -107,6 +107,186 @@ VMS = {
     "parameters": {"type": "object", "properties": {}},
 }
 
+PERMISSIONS = {
+    "name": "unraid_permissions",
+    "description": (
+        "Report which unraid_* tools are currently available and why the "
+        "others are not, separating 'not configured in UNRAID_SCOPES' from "
+        "'the API key lacks the permission'. Use this first when an unraid "
+        "tool is missing or returns a permission error, before assuming the "
+        "server is broken."
+    ),
+    "parameters": {"type": "object", "properties": {}},
+}
+
+LOGS = {
+    "name": "unraid_logs",
+    "description": (
+        "Read Unraid server log files. Call with no arguments to list the "
+        "available logs (name, path, size, last modified, empty ones omitted), "
+        "then call again with a path to read the tail of one. Use for "
+        "troubleshooting host-level problems - syslog, docker.log, and plugin "
+        "logs all appear here. Output is capped and truncated from the start, "
+        "so the most recent lines are always the ones returned."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Full log path from the listing, e.g. /var/log/syslog. Omit to list.",
+            },
+            "lines": {
+                "type": "integer",
+                "description": "Lines to read (default 100, max 500)",
+            },
+        },
+    },
+}
+
+CONTAINER_LOGS = {
+    "name": "unraid_container_logs",
+    "description": (
+        "Tail a docker container's logs by container name. Use when a "
+        "container is unhealthy, restarting, or misbehaving - this is the "
+        "first thing to check after unraid_containers shows something in a bad "
+        "state. Output is capped and the most recent lines are returned."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Container name, e.g. 'radarr'"},
+            "tail": {
+                "type": "integer",
+                "description": "Lines from the end (default 100, max 500)",
+            },
+            "since": {
+                "type": "string",
+                "description": "ISO-8601 timestamp; only return entries after it",
+            },
+        },
+        "required": ["name"],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Write tools. Registered only when their RESOURCE:UPDATE_ANY permission is
+# present in UNRAID_SCOPES, so the model never sees a tool it cannot use.
+# ---------------------------------------------------------------------------
+
+CHECK_UPDATES = {
+    "name": "unraid_check_updates",
+    "description": (
+        "Check which docker containers on the Unraid host have a newer image "
+        "available. Refreshes registry digests first, which is required - "
+        "update status reads as unknown until that runs. Returns containers "
+        "with updates pending, which of those are protected from actuation, "
+        "and any whose status could not be determined. Use before "
+        "unraid_update_containers."
+    ),
+    "parameters": {"type": "object", "properties": {}},
+}
+
+UPDATE_CONTAINERS = {
+    "name": "unraid_update_containers",
+    "description": (
+        "Update one or more named docker containers to their latest image. "
+        "Names must be given explicitly; there is no update-everything option, "
+        "because that could not exclude protected containers. Protected "
+        "containers (including the one this agent runs in) are refused and "
+        "reported back rather than silently skipped. Run unraid_check_updates "
+        "first to see what actually needs updating."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "names": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Container names to update, e.g. ['radarr','sonarr']",
+            },
+        },
+        "required": ["names"],
+    },
+}
+
+CONTAINER_POWER = {
+    "name": "unraid_container_power",
+    "description": (
+        "Start, stop, or restart a single docker container on the Unraid host. "
+        "Protected containers are refused. Use for recovering a stopped "
+        "service, not as a routine action."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Container name"},
+            "action": {
+                "type": "string",
+                "enum": ["start", "stop", "restart"],
+                "description": "What to do with the container",
+            },
+        },
+        "required": ["name", "action"],
+    },
+}
+
+INSTALL_PLUGIN = {
+    "name": "unraid_install_plugin",
+    "description": (
+        "Install or update an Unraid plugin from its .plg URL. Unraid updates "
+        "a plugin by reinstalling from the same URL, so this covers both. "
+        "Installing a plugin executes code on the host as root - only use URLs "
+        "the operator has specified or that are already installed."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "The plugin .plg URL (https only)"},
+            "forced": {
+                "type": "boolean",
+                "description": "Reinstall even if already up to date (default false)",
+            },
+        },
+        "required": ["url"],
+    },
+}
+
+NOTIFICATION_MANAGE = {
+    "name": "unraid_notification_manage",
+    "description": (
+        "Archive Unraid notifications or mark one unread. Archiving clears the "
+        "unread count without deleting the record. Get ids from "
+        "unraid_notifications first. Note: archiving an alert only dismisses "
+        "the message - it does not fix the underlying condition, and a "
+        "recurring scan such as Fix Common Problems will raise it again on its "
+        "next run. Do not archive warnings to make a problem look resolved."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["archive", "unread", "archive_all"],
+                "description": "archive (by ids), unread (single id), or archive_all",
+            },
+            "ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Notification ids to archive",
+            },
+            "id": {"type": "string", "description": "Single notification id"},
+            "importance": {
+                "type": "string",
+                "enum": ["ALERT", "WARNING", "INFO"],
+                "description": "For archive_all, limit to this importance level",
+            },
+        },
+        "required": ["action"],
+    },
+}
+
 GRAPHQL = {
     "name": "unraid_graphql",
     "description": (

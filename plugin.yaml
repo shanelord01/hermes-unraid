@@ -1,26 +1,53 @@
 name: unraid
-version: 1.1.0
+version: 2.0.0
 description: >-
-  Read-only Unraid server status tools - array health, disks/temps, docker
-  container states, and system notifications via the official Unraid GraphQL
-  API. Designed for agents running in a container on the Unraid host they
-  monitor: visibility without actuation.
+  Unraid server tools - array health, disks/temps, docker container states,
+  parity, shares, VMs, system notifications, and host/container logs for
+  troubleshooting, via the official Unraid GraphQL API. Every tool declares a
+  RESOURCE:ACTION permission in Unraid's own grammar, and UNRAID_SCOPES
+  controls which are registered. Defaults to read-only. Container updates,
+  container lifecycle, plugin installs, and notification management are opt-in.
+  Designed for agents running in a container on the Unraid host they manage,
+  with the agent's own container protected from self-actuation.
 author: Shane Lord
 provides_tools:
-  - unraid_overview
-  - unraid_disks
-  - unraid_containers
-  - unraid_notifications
-  - unraid_parity
-  - unraid_shares
-  - unraid_metrics
-  - unraid_vms
-  - unraid_graphql
+  # Always registered - reports which of the below are live and why.
+  - unraid_permissions
+  # Registered when the matching RESOURCE:ACTION is present in UNRAID_SCOPES.
+  # The default scope (*:READ_ANY) covers every READ_ANY tool below.
+  - unraid_overview               # ARRAY:READ_ANY
+  - unraid_parity                 # ARRAY:READ_ANY
+  - unraid_disks                  # DISK:READ_ANY
+  - unraid_containers             # DOCKER:READ_ANY
+  - unraid_notifications          # NOTIFICATIONS:READ_ANY
+  - unraid_shares                 # SHARE:READ_ANY
+  - unraid_metrics                # INFO:READ_ANY
+  - unraid_vms                    # VMS:READ_ANY
+  - unraid_logs                   # LOGS:READ_ANY
+  - unraid_container_logs         # LOGS:READ_ANY
+  - unraid_graphql                # INFO:READ_ANY (queries only, never mutations)
+  - unraid_check_updates          # DOCKER:UPDATE_ANY
+  - unraid_update_containers      # DOCKER:UPDATE_ANY
+  - unraid_container_power        # DOCKER:UPDATE_ANY
+  - unraid_notification_manage    # NOTIFICATIONS:UPDATE_ANY
+  - unraid_install_plugin         # CONFIG:UPDATE_ANY
 requires_env:
   - name: UNRAID_API_URL
     description: "Unraid GraphQL endpoint, e.g. https://192.168.1.10:5001/graphql (webGUI port)"
     secret: false
   - name: UNRAID_API_KEY
-    description: "Unraid API key - create a READ-ONLY key: unraid-api apikey --create --name hermes --roles VIEWER --permissions \"ARRAY:READ_ANY,DOCKER:READ_ANY,DISK:READ_ANY,INFO:READ_ANY,NOTIFICATIONS:READ_ANY\""
+    description: "Unraid API key. Read-only: unraid-api apikey --create --name hermes --roles VIEWER. For actuation, grant the matching permissions, e.g. --permissions \"DOCKER:UPDATE_ANY,NOTIFICATIONS:UPDATE_ANY\". The key's own permissions are enforced by the server regardless of UNRAID_SCOPES, so both must allow an action for it to succeed."
     url: "https://docs.unraid.net/API/how-to-use-the-api/"
     secret: true
+optional_env:
+  - name: UNRAID_SCOPES
+    description: "Comma-separated RESOURCE:ACTION scopes using Unraid's own permission grammar. Defaults to *:READ_ANY (read-only). Wildcards allowed on either side: DOCKER:* grants every action on DOCKER, *:READ_ANY grants read on everything. A bare resource (DOCKER) means every action on it. Example: DOCKER:READ_ANY,DOCKER:UPDATE_ANY,LOGS:READ_ANY"
+    prompt: "Scopes (blank for read-only)"
+    secret: false
+  - name: UNRAID_PROTECTED_CONTAINERS
+    description: "Comma-separated container names that write tools must never touch. The agent's own container is detected automatically, but a sidecar sharing its network namespace cannot be and must be listed here."
+    prompt: "Protected container names"
+    secret: false
+  - name: UNRAID_API_VERIFY_TLS
+    description: "Set to 1 to verify the Unraid TLS certificate. Off by default because the cert is issued for the myunraid.net hostname and a raw LAN IP endpoint cannot validate."
+    secret: false
