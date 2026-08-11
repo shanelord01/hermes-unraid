@@ -147,8 +147,6 @@ The tool separates the two rather than lumping them together:
 - `undetermined` - genuinely unknown, e.g. a private registry Unraid cannot query
 - `not_checkable_compose_managed` - compose-managed, update with `docker compose pull` in the project
 
-On a host with 37 containers, 13 compose-managed ones fell into the third bucket. Reporting those as "no update available" would have been wrong.
-
 Note also that `refreshDockerDigests` contacts every registry serially and routinely takes over a minute. The plugin allows 240s for it; a shorter client timeout aborts while the server keeps polling, leaving digests half-populated.
 
 ## Known upstream limitation: container logs
