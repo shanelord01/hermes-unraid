@@ -5,9 +5,11 @@ Mounted at /api/plugins/unraid/ by the Hermes dashboard.
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import sys
+import types
 from pathlib import Path
 from typing import Any, Dict
 
@@ -27,19 +29,35 @@ except Exception:  # Allows import without the dashboard dependencies present.
 
 router = APIRouter()
 
-# The plugin package sits one level up; import its modules directly so the
-# dashboard and the agent always agree on settings resolution and scope logic.
-_PLUGIN_DIR = str(Path(__file__).resolve().parent.parent)
-if _PLUGIN_DIR not in sys.path:
-    sys.path.insert(0, _PLUGIN_DIR)
+# The plugin package sits one level up. Every Hermes plugin's dashboard tab is
+# mounted this same way, sharing one Python process -- so a plain `import
+# settings`/`import tools` (relying on sys.path order for isolation) collides
+# with any other plugin's same-named file via the shared sys.modules cache.
+# Whichever plugin happens to import the bare name "settings" first "wins" it
+# process-wide; every later `import settings`, from ANY plugin, silently gets
+# that same cached module back regardless of sys.path. Confirmed live: this is
+# why the Unraid dashboard tab was reading NextDNS's settings.py.
+#
+# tools.py's own `from . import api_map, settings` falls back to the same bare
+# import when there's no real package context (exactly the case here), so
+# fixing only this file's imports isn't enough -- this plugin's own directory
+# is loaded as a genuine (synthetic) package instead, under a globally-unique
+# name, so every `from . import x` inside it resolves normally.
+_PLUGIN_DIR = Path(__file__).resolve().parent.parent
+_PKG_NAME = "hermes_unraid_plugin_pkg"
+
+if _PKG_NAME not in sys.modules:
+    _pkg = types.ModuleType(_PKG_NAME)
+    _pkg.__path__ = [str(_PLUGIN_DIR)]
+    sys.modules[_PKG_NAME] = _pkg
 
 try:
-    import settings as _settings
+    _settings = importlib.import_module(f"{_PKG_NAME}.settings")
 except Exception:  # noqa: BLE001
     _settings = None
 
 try:
-    import tools as _tools
+    _tools = importlib.import_module(f"{_PKG_NAME}.tools")
 except Exception:  # noqa: BLE001
     _tools = None
 
