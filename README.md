@@ -6,6 +6,8 @@ Built for the common homelab case where Hermes itself runs in a Docker container
 
 **Read-only by default.** Actuation (container updates, lifecycle, plugin installs, notification management) is opt-in per scope, using Unraid's own permission grammar.
 
+This plugin covers what Unraid's own API can see and do, which has a real edge: containers created by Compose Manager have no Docker template, so this plugin's own update-detection and container tools cannot see them properly (see Limitations below). [unraid-compose-gateway](https://github.com/shanelord01/unraid-compose-gateway) covers that gap - scoped Docker Compose control (with its own allowlist and a self-exclude list, enforced server-side) and Unraid plugin update *detection*, complementary to this plugin's ability to *apply* one via `unraid_install_plugin`.
+
 ## Permission model
 
 Every tool declares a `RESOURCE:ACTION` permission in the same vocabulary Unraid uses for API keys, so what you put in `UNRAID_SCOPES` matches what you granted the key.
@@ -201,7 +203,12 @@ Three things the Unraid API cannot do, all upstream rather than plugin behaviour
 ### Plugin updates cannot be detected
 `unraid_install_plugin` installs or updates a plugin from its `.plg` URL, and Unraid treats an update as a reinstall from the same URL. What the API cannot do is tell you which plugins need one: `installedUnraidPlugins` returns `[String!]!`, a list of names with no version or update flag. Update detection lives in Community Applications' web UI and is not exposed.
 
-So the agent can apply a plugin update you name, but cannot discover that one is available.
+So the agent can apply a plugin update you name, but cannot discover that one is available - on its own. If you also run [unraid-compose-gateway](https://github.com/shanelord01/unraid-compose-gateway), its `compose_gateway_plugin_updates` tool fills exactly this gap: it replicates the same local-`.plg`-vs-remote-`.plg` version check Unraid's own web UI does, and reports which installed plugins have an update available. Detection and application stay two separate steps either way - this repo applies, that one detects.
+
+### Cannot update dynamix.unraid.net (Unraid Connect) itself
+Confirmed live, not theoretical: `unraid_install_plugin` goes through this same GraphQL API, and `dynamix.unraid.net` is the plugin that *runs* that API service. Installing an update to it kills the API process mid-install - `graphql-api.log` showed the process exiting on signal 130 partway through, then rolling back cleanly to the prior version on restart. No corruption, but the update never actually applies, no matter how many times it's retried.
+
+The only thing that works for this specific plugin is the Unraid webGUI's own "Check for Updates" / Update button on the Connect settings page, which runs the install via PHP outside the Node API process and so survives the restart it triggers. That path is not reachable from this plugin - it needs a human click in the browser.
 
 ### Update detection only covers template-managed containers
 `unraid_check_updates` depends on Unraid's own digest comparison, which works off a container's docker template. Containers created by Compose Manager have no template, so `isUpdateAvailable` reports null for them permanently. That is "not checkable here", not "unknown but retryable".

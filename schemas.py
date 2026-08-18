@@ -298,7 +298,14 @@ INSTALL_PLUGIN = {
         "installedUnraidPlugins returns names only, with no version or "
         "update flag. Do not go looking for one. "
         "Installing a plugin executes code on the host as root - only use URLs "
-        "the operator has specified or that are already installed."
+        "the operator has specified or that are already installed. "
+        "CANNOT update dynamix.unraid.net (Unraid Connect) itself: that plugin "
+        "runs the GraphQL API service this tool goes through, so installing it "
+        "kills the API process mid-install. It rolls back safely, but the "
+        "update never actually applies - confirmed live, not theoretical. "
+        "Report this rather than retrying; the operator needs the Unraid "
+        "webGUI's own Update button for this one plugin, which installs via "
+        "PHP outside the API process and survives the restart."
     ),
     "parameters": {
         "type": "object",

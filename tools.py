@@ -878,6 +878,16 @@ def unraid_install_plugin(args: dict, **kwargs) -> str:
     Unraid updates a plugin by reinstalling from the same URL, so this covers
     both cases. The URL is the operator's responsibility - installing a plugin
     is arbitrary code execution on the host.
+
+    Cannot update dynamix.unraid.net (Unraid Connect) itself - confirmed
+    live, 2026-08-18: that plugin's install script runs inside the same
+    process that serves this GraphQL API, so installing it kills the API
+    server mid-install. graphql-api.log showed the process exiting on
+    signal 130 partway through, then a clean rollback to the prior version
+    on restart - no corruption, but the update never actually applies. The
+    only way to update that specific plugin is the Unraid webGUI's own
+    "Check for Updates" button, which runs the install via PHP outside the
+    Node API process and so survives the restart it triggers.
     """
     err = _require("unraid_install_plugin")
     if err:
@@ -891,7 +901,8 @@ def unraid_install_plugin(args: dict, **kwargs) -> str:
     if args.get("forced"):
         payload["forced"] = True
     return _run(
-        "mutation($input: InstallPluginInput!) { unraidPlugins { installPlugin(input: $input) } }",
+        "mutation($input: InstallPluginInput!) { unraidPlugins { installPlugin(input: $input) { "
+        "id url name status createdAt updatedAt finishedAt output } } }",
         {"input": payload},
     )
 
