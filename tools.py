@@ -879,15 +879,32 @@ def unraid_install_plugin(args: dict, **kwargs) -> str:
     both cases. The URL is the operator's responsibility - installing a plugin
     is arbitrary code execution on the host.
 
-    Cannot update dynamix.unraid.net (Unraid Connect) itself - confirmed
-    live, 2026-08-18: that plugin's install script runs inside the same
-    process that serves this GraphQL API, so installing it kills the API
-    server mid-install. graphql-api.log showed the process exiting on
-    signal 130 partway through, then a clean rollback to the prior version
-    on restart - no corruption, but the update never actually applies. The
-    only way to update that specific plugin is the Unraid webGUI's own
-    "Check for Updates" button, which runs the install via PHP outside the
-    Node API process and so survives the restart it triggers.
+    THIS MUTATION'S "completed successfully" IS NOT PROOF THE UPDATE ACTUALLY
+    APPLIED - confirmed live, 2026-08-19: graphql-api.log logged a plugin
+    install (folderview.plus, not dynamix.unraid.net) as started and
+    completed successfully 3 seconds apart, but the installed version had NOT
+    actually changed afterward - the operator had to separately log into the
+    Unraid webGUI for the update to actually take effect. This is a DIFFERENT
+    and more general failure mode than the dynamix.unraid.net case below (no
+    process crash, no log evidence of anything going wrong at all) - the root
+    cause is not yet understood, and it is not currently known whether it
+    affects every plugin or only some. Treat this mutation's own response as
+    "an install was requested," never as confirmation the plugin actually
+    updated. ALWAYS re-check afterward (e.g. via the ucg plugin's
+    ucg_plugin_updates with force=true) and treat a plugin that still shows
+    update_available after this call as needing a manual webGUI update, not
+    as a tool failure to retry.
+
+    Cannot update dynamix.unraid.net (Unraid Connect) itself AT ALL via this
+    mutation, for a distinct, well-understood reason - confirmed live,
+    2026-08-18: that plugin's install script runs inside the same process
+    that serves this GraphQL API, so installing it kills the API server
+    mid-install. graphql-api.log showed the process exiting on signal 130
+    partway through, then a clean rollback to the prior version on restart -
+    no corruption, but the update never actually applies. The only way to
+    update that specific plugin is the Unraid webGUI's own "Check for
+    Updates" button, which runs the install via PHP outside the Node API
+    process and so survives the restart it triggers.
     """
     err = _require("unraid_install_plugin")
     if err:
